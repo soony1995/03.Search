@@ -141,9 +141,15 @@ export async function searchPhotos(params: SearchParams) {
             : result.hits.total?.value ?? 0,
         page,
         size,
-        items: result.hits.hits.map(hit => ({
-            ...(hit._source as PhotoDocument),
-            score: hit._score
-        }))
+        items: result.hits.hits.map((hit) => {
+            const source = (hit._source ?? {}) as any
+            const mediaId = source.mediaId ?? source.media_id ?? null
+
+            return {
+                ...source,
+                ...(mediaId ? { mediaId } : {}),
+                score: hit._score
+            }
+        })
     }
 }

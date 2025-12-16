@@ -75,7 +75,7 @@ async function fetchPhotoData(mediaId: string): Promise<PhotoDocument | null> {
       SELECT p.id as person_id, p.name
       FROM photo_persons pp
       JOIN persons p ON pp.person_id = p.id
-      WHERE pp.media_id = $1
+      WHERE pp.media_id = $1 AND pp.confirmed = true
     `, [mediaId])
 
         const doc: PhotoDocument = {
