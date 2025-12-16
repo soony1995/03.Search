@@ -5,9 +5,24 @@ services:
   elasticsearch:
     image: docker.elastic.co/elasticsearch/elasticsearch:8.11.0
     container_name: search-elasticsearch
+    # Install analysis-nori so `nori_tokenizer` works (used by `photos` index mapping).
+    # This runs before Elasticsearch starts inside the container.
+    command:
+      - bash
+      - -lc
+      - |
+        if ! bin/elasticsearch-plugin list | grep -q '^analysis-nori$'; then
+          bin/elasticsearch-plugin install --batch analysis-nori
+        fi
+        exec /usr/local/bin/docker-entrypoint.sh eswrapper
     environment:
       - discovery.type=single-node
       - xpack.security.enabled=false
+      # NOTE: Elasticsearch SQL JDBC/ODBC is license-gated. Enable a dev trial license so tools like DBeaver can use JDBC.
+      # If you already have an existing `es_data` volume, either start the trial once via:
+      #   POST http://localhost:9200/_license/start_trial?acknowledge=true
+      # or recreate the volume (`docker-compose down -v`) to apply the self-generated license type.
+      - xpack.license.self_generated.type=trial
       - "ES_JAVA_OPTS=-Xms512m -Xmx512m"
     ports:
       - "9200:9200"

@@ -27,6 +27,7 @@
 | 채널 | Publisher | Action |
 |:---|:---|:---|
 | `photo:analyzed` | 11.AI | ES 인덱싱 트리거 |
+| `photo:reindex` | 11.AI(person-api) | 인물 매핑 변경 시 재인덱싱 |
 
 ---
 

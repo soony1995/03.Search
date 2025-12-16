@@ -7,6 +7,7 @@ const redis = new Redis(config.redisUrl)
 const pool = new pg.Pool({ connectionString: config.aiPostgresUrl })
 
 const CHANNEL_PHOTO_ANALYZED = 'photo:analyzed'
+const CHANNEL_PHOTO_REINDEX = 'photo:reindex'
 
 interface AnalyzedEvent {
     mediaId: string
@@ -14,22 +15,29 @@ interface AnalyzedEvent {
     faceCount: number
 }
 
+interface ReindexEvent {
+    mediaId: string
+}
+
 export function startSubscriber(): void {
     const subscriber = new Redis(config.redisUrl)
 
-    subscriber.subscribe(CHANNEL_PHOTO_ANALYZED)
-    console.log(`[Subscriber] Listening to ${CHANNEL_PHOTO_ANALYZED}`)
+    subscriber.subscribe(CHANNEL_PHOTO_ANALYZED, CHANNEL_PHOTO_REINDEX)
+    console.log(`[Subscriber] Listening to ${CHANNEL_PHOTO_ANALYZED}, ${CHANNEL_PHOTO_REINDEX}`)
 
-    subscriber.on('message', async (channel, message) => {
-        if (channel !== CHANNEL_PHOTO_ANALYZED) return
+    subscriber.on('message', async (channel: string, message: string) => {
+        if (channel !== CHANNEL_PHOTO_ANALYZED && channel !== CHANNEL_PHOTO_REINDEX) return
 
         try {
-            const event: AnalyzedEvent = JSON.parse(message)
-            console.log(`[Subscriber] Received: ${event.mediaId}`)
+            const event: AnalyzedEvent | ReindexEvent = JSON.parse(message)
+            console.log(`[Subscriber] Received (${channel}): ${event.mediaId}`)
 
-            if (event.status !== 'DONE') {
-                console.log(`[Subscriber] Skipping (status: ${event.status})`)
-                return
+            if (channel === CHANNEL_PHOTO_ANALYZED) {
+                const analyzed = event as AnalyzedEvent
+                if (analyzed.status !== 'DONE') {
+                    console.log(`[Subscriber] Skipping (status: ${analyzed.status})`)
+                    return
+                }
             }
 
             // Fetch full data from AI database
@@ -75,7 +83,7 @@ async function fetchPhotoData(mediaId: string): Promise<PhotoDocument | null> {
             ownerId: analysis.owner_id,
             faceCount: analysis.face_count || 0,
             analyzedAt: analysis.analyzed_at?.toISOString() || new Date().toISOString(),
-            persons: personsResult.rows.map(row => ({
+            persons: personsResult.rows.map((row: any) => ({
                 personId: row.person_id,
                 name: row.name
             }))
