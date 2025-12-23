@@ -1,9 +1,56 @@
 import { Client } from '@elastic/elasticsearch'
+import type { IndicesCreateRequest } from '@elastic/elasticsearch/lib/api/typesWithBodyKey'
 import { config } from '../config.js'
 
 const client = new Client({ node: config.elasticsearchUrl })
 
 const PHOTO_INDEX = 'photos'
+
+type PhotoIndexBody = NonNullable<IndicesCreateRequest['body']>
+
+function buildPhotoIndexBody(): PhotoIndexBody {
+    return {
+        settings: {
+            analysis: {
+                analyzer: {
+                    korean: {
+                        type: 'custom',
+                        tokenizer: 'nori_tokenizer',
+                        filter: ['lowercase']
+                    }
+                }
+            }
+        },
+        mappings: {
+            properties: {
+                mediaId: { type: 'keyword' },
+                ownerId: { type: 'keyword' },
+                takenAt: { type: 'date' },
+                analyzedAt: { type: 'date' },
+                location: { type: 'geo_point' },
+                faceCount: { type: 'integer' },
+                persons: {
+                    type: 'nested',
+                    properties: {
+                        personId: { type: 'keyword' },
+                        name: {
+                            type: 'text',
+                            analyzer: 'korean',
+                            fields: {
+                                keyword: { type: 'keyword' },
+                                suggest: {
+                                    type: 'search_as_you_type',
+                                    analyzer: 'korean',
+                                    search_analyzer: 'korean'
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
 
 export async function initElasticsearch(): Promise<void> {
     const health = await client.cluster.health()
@@ -16,39 +63,62 @@ export async function createPhotoIndex(): Promise<void> {
     if (!exists) {
         await client.indices.create({
             index: PHOTO_INDEX,
-            body: {
-                settings: {
-                    analysis: {
-                        analyzer: {
-                            korean: {
-                                type: 'custom',
-                                tokenizer: 'nori_tokenizer',
-                                filter: ['lowercase']
-                            }
-                        }
-                    }
-                },
-                mappings: {
-                    properties: {
-                        mediaId: { type: 'keyword' },
-                        ownerId: { type: 'keyword' },
-                        takenAt: { type: 'date' },
-                        analyzedAt: { type: 'date' },
-                        location: { type: 'geo_point' },
-                        faceCount: { type: 'integer' },
-                        persons: {
-                            type: 'nested',
-                            properties: {
-                                personId: { type: 'keyword' },
-                                name: { type: 'text', analyzer: 'korean' }
-                            }
-                        }
-                    }
-                }
-            }
+            body: buildPhotoIndexBody()
         })
         console.log(`[ES] Created index: ${PHOTO_INDEX}`)
     }
+}
+
+export async function reindexPhotoIndex(): Promise<void> {
+    const exists = await client.indices.exists({ index: PHOTO_INDEX })
+
+    if (!exists) {
+        await client.indices.create({
+            index: PHOTO_INDEX,
+            body: buildPhotoIndexBody()
+        })
+        console.log(`[ES] Created index: ${PHOTO_INDEX}`)
+        return
+    }
+
+    const timestamp = new Date().toISOString().toLowerCase().replace(/[:.]/g, '-')
+    const targetIndex = `${PHOTO_INDEX}_reindex_${timestamp}`
+
+    await client.indices.create({
+        index: targetIndex,
+        body: buildPhotoIndexBody()
+    })
+
+    await client.reindex({
+        wait_for_completion: true,
+        refresh: true,
+        body: {
+            source: { index: PHOTO_INDEX },
+            dest: { index: targetIndex }
+        }
+    })
+
+    const aliasExists = await client.indices.existsAlias({ name: PHOTO_INDEX })
+    if (aliasExists) {
+        const aliasInfo = await client.indices.getAlias({ name: PHOTO_INDEX })
+        const currentIndices = Object.keys(aliasInfo)
+
+        await client.indices.updateAliases({
+            body: {
+                actions: [
+                    ...currentIndices.map((index) => ({
+                        remove: { index, alias: PHOTO_INDEX }
+                    })),
+                    { add: { index: targetIndex, alias: PHOTO_INDEX } }
+                ]
+            }
+        })
+    } else {
+        await client.indices.delete({ index: PHOTO_INDEX })
+        await client.indices.putAlias({ index: targetIndex, name: PHOTO_INDEX })
+    }
+
+    console.log(`[ES] Reindexed ${PHOTO_INDEX} -> ${targetIndex}`)
 }
 
 export interface PhotoDocument {
@@ -152,4 +222,58 @@ export async function searchPhotos(params: SearchParams) {
             }
         })
     }
+}
+
+export async function suggestPersonNames(ownerId: string, prefix: string): Promise<string[]> {
+    const normalized = prefix.trim()
+    if (normalized.length < config.suggestMinPrefix) return []
+    const bounded = normalized.slice(0, config.suggestMaxPrefix)
+
+    const result = await client.search({
+        index: PHOTO_INDEX,
+        body: {
+            size: 0,
+            query: {
+                bool: {
+                    must: [
+                        { term: { ownerId } }
+                    ]
+                }
+            },
+            aggs: {
+                persons: {
+                    nested: { path: 'persons' },
+                    aggs: {
+                        matched_names: {
+                            filter: {
+                                multi_match: {
+                                    query: bounded,
+                                    type: 'bool_prefix',
+                                    fields: [
+                                        'persons.name.suggest',
+                                        'persons.name.suggest._2gram',
+                                        'persons.name.suggest._3gram'
+                                    ]
+                                }
+                            },
+                            aggs: {
+                                suggestions: {
+                                    terms: {
+                                        field: 'persons.name.keyword',
+                                        size: 10
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    })
+
+    const personsAgg = result.aggregations?.persons as any
+    const matchedNames = personsAgg?.matched_names as any
+    const buckets = matchedNames?.suggestions?.buckets || []
+
+    return buckets.map((b: any) => b.key)
 }

@@ -1,6 +1,6 @@
 import express from 'express'
 import { config } from './config.js'
-import { initElasticsearch, createPhotoIndex } from './services/elasticsearch.js'
+import { initElasticsearch, createPhotoIndex, reindexPhotoIndex } from './services/elasticsearch.js'
 import { startSubscriber } from './services/subscriber.js'
 import searchRoutes from './routes/search.js'
 
@@ -20,7 +20,11 @@ async function start() {
     try {
         // Initialize Elasticsearch
         await initElasticsearch()
-        await createPhotoIndex()
+        if (config.elasticsearchReindex) {
+            await reindexPhotoIndex()
+        } else {
+            await createPhotoIndex()
+        }
         console.log('[Search] Elasticsearch initialized')
 
         // Start Redis subscriber for indexing

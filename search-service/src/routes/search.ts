@@ -1,6 +1,6 @@
 import { Router, type Request, type Response } from 'express'
 import { z } from 'zod'
-import { searchPhotos } from '../services/elasticsearch.js'
+import { searchPhotos, suggestPersonNames } from '../services/elasticsearch.js'
 
 const router = Router()
 
@@ -45,6 +45,23 @@ router.get('/photos', async (req: Request, res: Response) => {
             return res.status(401).json({ message: 'Unauthorized' })
         }
         console.error('[Search] Error:', error)
+        return res.status(500).json({ message: 'Internal server error' })
+    }
+})
+
+// Autocomplete suggestions
+router.get('/photos/suggestions', async (req: Request, res: Response) => {
+    try {
+        const userId = ensureUser(req)
+        const prefix = typeof req.query.q === 'string' ? req.query.q : ''
+        
+        const suggestions = await suggestPersonNames(userId, prefix)
+        return res.json(suggestions)
+    } catch (error) {
+         if ((error as Error).message === 'Unauthorized') {
+            return res.status(401).json({ message: 'Unauthorized' })
+        }
+        console.error('[Search Suggest] Error:', error)
         return res.status(500).json({ message: 'Internal server error' })
     }
 })
